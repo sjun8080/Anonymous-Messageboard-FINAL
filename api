@@ -1,0 +1,185 @@
+
+"use strict";
+
+const Thread = require("../model/messageBoard").Thread;
+const Reply = require("../model/messageBoard").Reply;
+module.exports = function (app) {
+  app
+    .route("/api/threads/:board")
+    .post(async (req, res) => {
+      // POST ROUTE
+      const { board } = req.params;
+      const { text, delete_password } = req.body;
+
+      const thread = await Thread.create({
+        board,
+        text,
+        delete_password,
+        replies: [],
+      });
+      res.send(thread);
+    })
+    .get(async (req, res) => {
+      // GET ROUTE
+      const { board } = req.params;
+      let threads = await Thread.find({ board })
+        .sort("-bumped_on")
+        .limit(10)
+        .select("text created_on bumped_on replies");
+
+      threads = threads
+        .map((thread) => {
+          let threadToView = {
+            _id: thread._id,
+            text: thread.text,
+            created_on: thread.created_on,
+            bumped_on: thread.bumped_on,
+            replies: thread.replies
+              .slice(0, 3)
+              .sort((a, b) => a.created_on - b.created_on)
+              
+              .map((reply) => {
+                let rep = {
+                  _id: reply._id,
+                  text: reply.text,
+                  created_on: reply.created_on,
+                };
+                return rep;
+              }),
+          };
+          return threadToView;
+        })
+        .slice(0, 10);
+      res.send(threads);
+    })
+    .delete(async (req, res) => {
+      // DELETE ROUTE for THREAD
+      const { board } = req.params;
+      const { thread_id, delete_password } = req.body;
+
+      // Input validation
+      if (!thread_id || !delete_password) {
+        return res.send("incorrect password"); 
+      }
+
+      try {
+        const deleteTheThread = await Thread.findOneAndDelete({
+          _id: thread_id,
+          board,
+          delete_password,
+        });
+
+        if (!deleteTheThread) {
+          return res.send("incorrect password");
+        }
+
+        return res.send("success");
+      } catch (err) {
+        console.error(err);
+        return res.status(500).send("Server error");
+      }
+    })
+    .put(async (req, res) => {
+      // PUT ROUTE
+      const { board, thread_id } = req.body;
+      let uptodate = await Thread.findById(thread_id);
+      if (uptodate) {
+        uptodate.reported = true;
+        await uptodate.save();
+        res.send("reported");
+      } else {
+        res.send("incorrect thread id");
+      }
+    });
+
+  app
+    .route("/api/replies/:board")
+    .post(async (req, res) => {
+      // POST ROUTE
+      const { board } = req.params;
+      const { text, delete_password, thread_id } = req.body;
+      let whenReplyCreated = new Date();
+      const reply = new Reply({
+        text,
+        delete_password,
+        created_on: whenReplyCreated,
+      });
+
+      let uptodate = await Thread.findById(thread_id);
+      uptodate.replies.push(reply);
+      uptodate.bumped_on = whenReplyCreated;
+      await uptodate.save();
+      res.send(uptodate);
+    })
+    .get(async (req, res) => {
+      // GET ROUTE
+      const { thread_id } = req.query;
+      let thread = await Thread.findById(thread_id).populate("replies");
+
+      let threadToView = {
+        _id: thread._id,
+        text: thread.text,
+        created_on: thread.created_on,
+        bumped_on: thread.bumped_on,
+        replies: thread.replies.map((reply) => {
+          return {
+            _id: reply._id,
+            text: reply.text,
+            created_on: reply.created_on,
+          };
+        }),
+      };
+      res.send(threadToView);
+    })
+    .delete(async (req, res) => {
+      // DELETE ROUTE for REPLY
+      const { thread_id, reply_id, delete_password } = req.body;
+
+      if (!thread_id || !reply_id || !delete_password) {
+        return res.send("incorrect password"); // Missing input handling
+      }
+
+      try {
+        const deleteTheThreadReplyFrom = await Thread.findById(thread_id);
+
+        if (!deleteTheThreadReplyFrom) {
+          return res.send("incorrect password"); // Thread not found
+        }
+
+        const deleteTheReply = deleteTheThreadReplyFrom.replies.id(reply_id);
+
+        if (!deleteTheReply) {
+          return res.send("incorrect password"); // Reply not found
+        }
+
+        if (deleteTheReply.delete_password === delete_password) {
+          deleteTheReply.text = "[deleted]"; // Mask the reply text
+          deleteTheThreadReplyFrom.bumped_on = new Date(); // Update bump date
+          await deleteTheThreadReplyFrom.save();
+          return res.send("success");
+        } else {
+          return res.send("incorrect password"); // Password mismatch
+        }
+      } catch (err) {
+        console.error(err);
+        return res.status(500).send("Server error"); // General error handling
+      }
+    })
+    .put(async (req, res) => {
+      // PUT ROUTE for REPLY
+      const { thread_id, reply_id, board } = req.body;
+      const enrouteToTheThread = await Thread.findById(thread_id);
+      const replyTarget = enrouteToTheThread.replies.find(
+        (reply) => reply._id.toString() === reply_id,
+      );
+
+      if (replyTarget) {
+        replyTarget.reported = true;
+        enrouteToTheThread.bumped_on = new Date();
+        await enrouteToTheThread.save();
+        res.send("reported");
+      } else {
+        res.send("incorrect");
+      }
+    });
+};
